@@ -97,6 +97,11 @@ QOS_PROFILES = {
     },
 }
 
+# ── MQTT Broker ───────────────────────────────────────────────────────────
+MQTT_BROKER        = "localhost"
+MQTT_PORT          = 1883
+MQTT_ANOMALY_ALERT = 0.6   # anomaly score threshold for LLM trigger
+
 # ── Groq LLM ───────────────────────────────────────────────────────────────
 GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL    = os.getenv("GROQ_MODEL", "llama3-8b-8192")
