@@ -138,13 +138,11 @@ def _process(telemetry: dict):
             sim_state.add_event(f"⚠️ LLM failed {did}: {e}")
 
     # ── Send control command back to device ───────────────────────────────
-    if policy["action"] not in ("NO_ACTION", "RAISE_ALERT"):
+    if policy["action"] not in ("NO_ACTION",):
         network_manager.apply_allocation(did, dtype, allocation, policy["reason"])
         save_action(did, policy["action"], policy["severity"], policy["reason"])
-        sim_state.add_event(
-            f"{'🔴' if policy['severity']=='CRITICAL' else '⚡' if policy['severity']=='HIGH' else '🟡'} "
-            f"{policy['action']} on {did} — {policy['reason']}"
-        )
+        icon = "🔴" if policy["severity"] == "CRITICAL" else "⚡" if policy["severity"] == "HIGH" else "🟡"
+        sim_state.add_event(f"{icon} {policy['action']} on {did} — {policy['reason']}")
 
     # ── Store enriched state ───────────────────────────────────────────────
     sim_state.update({

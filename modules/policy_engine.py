@@ -6,7 +6,12 @@ LLM reserved for esc > 0.9 AND congestion conflict.
 import numpy as np
 from config import QOS_PROFILES
 
-LLM_THRESHOLD = 0.9   # only escalate to LLM above this
+LLM_THRESHOLD  = 0.9
+ANOMALY_THRESH = 0.6
+
+# Track which devices are currently isolated so we can auto-recover
+_isolated: dict[str, float] = {}   # device_id → timestamp of isolation
+ISOLATE_RECOVER_SEC = 20
 
 
 def evaluate(
@@ -22,15 +27,8 @@ def evaluate(
     total_usage: float,
     network_capacity: float = 500.0,
 ) -> dict:
-    """
-    Returns:
-        action        : what to do
-        severity      : LOW / MEDIUM / HIGH / CRITICAL
-        reason        : human-readable explanation
-        invoke_llm    : True only for exceptional cases
-        allocation    : suggested bandwidth/latency/priority
-    """
-    profile    = QOS_PROFILES.get(device_type, QOS_PROFILES["ICU Monitoring"])
+    import time
+    profile     = QOS_PROFILES.get(device_type, QOS_PROFILES["ICU Monitoring"])
     utilization = total_usage / network_capacity
 
     action     = "NO_ACTION"
@@ -42,6 +40,22 @@ def evaluate(
         "allocated_latency":   profile["latency_ms"],
         "priority":            profile["priority"],
     }
+
+    # ── Auto-recovery: device was isolated, anomaly cleared ───────────────
+    if device_id in _isolated and anomaly_score < ANOMALY_THRESH:
+        elapsed = time.time() - _isolated[device_id]
+        if elapsed > ISOLATE_RECOVER_SEC:
+            del _isolated[device_id]
+            action   = "RECOVER_DEVICE"
+            severity = "LOW"
+            reason   = f"{device_id} anomaly cleared — restoring normal allocation"
+            allocation = {
+                "allocated_bandwidth": profile["bandwidth_mbps"],
+                "allocated_latency":   profile["latency_ms"],
+                "priority":            profile["priority"],
+            }
+            return {"action": action, "severity": severity, "reason": reason,
+                    "invoke_llm": False, "allocation": allocation}
 
     # ── Rule 1: Emergency device ───────────────────────────────────────────
     if device_type == "Emergency Ambulance" and bandwidth > 20:
@@ -73,18 +87,26 @@ def evaluate(
         allocation = {"allocated_bandwidth": min(bandwidth * 0.3, 3.0),
                       "allocated_latency": 40.0, "priority": "Low"}
 
-    # ── Rule 5: Anomaly detected ──────────────────────────────────────────
-    elif anomaly_score > 0.6:
-        action   = "RAISE_ALERT"
-        severity = "HIGH"
-        reason   = f"Anomaly score {anomaly_score:.3f} on {device_id}"
+    # ── Rule 5: Anomaly — isolate device, call LLM immediately ────────────
+    elif anomaly_score > ANOMALY_THRESH:
+        _isolated[device_id] = time.time()
+        action     = "ISOLATE_DEVICE"
+        severity   = "CRITICAL"
+        reason     = f"Anomaly score {anomaly_score:.3f} on {device_id} — isolating"
+        invoke_llm = True   # always call LLM for anomalies
+        # Cap bandwidth to 20% of normal, slow publish, drop priority
+        allocation = {
+            "allocated_bandwidth": max(profile["bandwidth_mbps"] * 0.2, 1.0),
+            "allocated_latency":   profile["latency_ms"] * 2,
+            "priority":            "Low",
+        }
 
-    # ── Rule 6: Escalate to LLM — exceptional case only ───────────────────
+    # ── Rule 6: Escalate to LLM — high esc + congestion ──────────────────
     if esc_score > LLM_THRESHOLD and congested and priority >= 6:
         invoke_llm = True
         action     = "LLM_ESCALATION"
         severity   = "CRITICAL"
-        reason     = (f"esc={esc_score:.3f} > {LLM_THRESHOLD} with network congestion "
+        reason     = (f"esc={esc_score:.3f} > {LLM_THRESHOLD} with congestion "
                       f"({utilization*100:.0f}%) — escalating to LLM")
 
     return {

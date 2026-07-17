@@ -8,7 +8,7 @@ import json
 import paho.mqtt.client as mqtt
 from config import MQTT_BROKER, MQTT_PORT
 
-NETWORK_CAPACITY_MBPS = 500.0   # total simulated network capacity
+NETWORK_CAPACITY_MBPS = 300.0   # total simulated network capacity
 
 # 6G slice definitions
 SLICES = {
