@@ -1,84 +1,37 @@
-"""
-modules/optimizer.py
-Cost function and performance comparison across three strategies.
-"""
-
+"""Transparent strategy summaries. Estimated quantities are labelled as proxies."""
 import numpy as np
 from config import ALPHA_COST, BETA_COST, GAMMA_COST, DELTA_COST
 
-
-def compute_cost(
-    latency: float,
-    energy: float,
-    llm_calls: int,
-    resource_waste: float,
-    n_steps: int = 1,
-) -> float:
-    """
-    Cost = alpha*Latency + beta*Energy + gamma*(LLMCalls/n) + delta*ResourceWaste
-    All terms normalised to [0,1] range before weighting.
-    """
-    lat_norm   = np.clip(latency / 100.0, 0, 1)
-    eng_norm   = np.clip(energy  / 100.0, 0, 1)
-    llm_norm   = np.clip(llm_calls / max(n_steps, 1), 0, 1)
+def compute_cost(latency: float, energy: float, llm_calls: int, resource_waste: float, n_steps: int = 1) -> float:
+    if n_steps <= 0:
+        raise ValueError("n_steps must be positive")
+    vals = [latency, energy, llm_calls, resource_waste]
+    if not np.isfinite(vals).all() or min(vals) < 0:
+        raise ValueError("cost inputs must be finite and non-negative")
+    lat_norm = np.clip(latency / 100.0, 0, 1)
+    eng_norm = np.clip(energy / 100.0, 0, 1)
+    llm_norm = np.clip(llm_calls / n_steps, 0, 1)
     waste_norm = np.clip(resource_waste / 200.0, 0, 1)
-
-    return float(
-        ALPHA_COST * lat_norm
-        + BETA_COST  * eng_norm
-        + GAMMA_COST * llm_norm
-        + DELTA_COST * waste_norm
-    )
-
+    return float(ALPHA_COST*lat_norm + BETA_COST*eng_norm + GAMMA_COST*llm_norm + DELTA_COST*waste_norm)
 
 def energy_model(bandwidth: float, llm_invoked: bool) -> float:
-    """Simple linear energy proxy (Joules per interval)."""
-    base   = 0.5 * bandwidth
-    llm_e  = 15.0 if llm_invoked else 0.0
-    return base + llm_e
-
+    """Illustrative proxy only; not measured hardware/API energy."""
+    return max(0.0, 0.5 * float(bandwidth)) + (15.0 if llm_invoked else 0.0)
 
 def compare_strategies(results: list[dict]) -> dict:
-    """
-    Compare three strategies over a list of escalation result dicts:
-      1. Always-LLM
-      2. LSTM-Only (no LLM, no escalation)
-      3. Proposed Adaptive Escalation
-    Returns summary metrics for each strategy.
-    """
+    """Compare decision counts and QoS outputs; never fabricate per-strategy latency."""
     n = len(results)
-    if n == 0:
+    if not n:
         return {}
-
-    proposed_llm_calls = sum(r["llm_invoked"] for r in results)
-
-    def _metrics(llm_calls_per_step, use_llm_bw=False):
-        latencies, energies, wastes, qos_scores = [], [], [], []
-        for r in results:
-            alloc_bw  = r["slice"].get("bandwidth", 80)
-            lat       = r["slice"].get("latency", 10)
-            energy    = energy_model(alloc_bw, use_llm_bw)
-            waste     = max(0.0, alloc_bw - r["predicted_traffic"])
-            latencies.append(lat)
-            energies.append(energy)
-            wastes.append(waste)
-            qos_scores.append(r["qos_score"])
-        total_llm = int(llm_calls_per_step * n)
-        cost = compute_cost(
-            np.mean(latencies), np.mean(energies),
-            total_llm, np.mean(wastes), n
-        )
-        return {
-            "avg_latency":    float(np.mean(latencies)),
-            "avg_energy":     float(np.mean(energies)),
-            "llm_calls":      total_llm,
-            "avg_qos":        float(np.mean(qos_scores)),
-            "avg_waste":      float(np.mean(wastes)),
-            "cost":           cost,
-        }
-
+    proposed_calls = int(sum(bool(r["llm_invoked"]) for r in results))
+    qos = [float(r.get("qos_score", 0.0)) for r in results]
+    alloc_bw = [float(r.get("allocated_bandwidth", r.get("slice", {}).get("bandwidth", 0.0))) for r in results]
+    traffic = [float(r.get("predicted_traffic", 0.0)) for r in results]
+    waste = float(np.mean([max(0.0, b-t) for b,t in zip(alloc_bw, traffic)]))
     return {
-        "Always-LLM":          _metrics(1.0, use_llm_bw=True),
-        "LSTM-Only":           _metrics(0.0, use_llm_bw=False),
-        "Proposed Framework":  _metrics(proposed_llm_calls / n, use_llm_bw=False),
+        "Always-LLM": {"llm_calls": n, "llm_call_rate": 1.0, "avg_qos_score_observed": float(np.mean(qos))},
+        "LSTM-Only": {"llm_calls": 0, "llm_call_rate": 0.0, "avg_qos_score_observed": float(np.mean(qos))},
+        "Proposed Framework": {"llm_calls": proposed_calls, "llm_call_rate": proposed_calls/n,
+                               "avg_qos_score_observed": float(np.mean(qos)), "avg_bandwidth_waste_mbps": waste,
+                               "energy_proxy_only": float(np.mean([energy_model(b, False) for b in alloc_bw]))}
     }
